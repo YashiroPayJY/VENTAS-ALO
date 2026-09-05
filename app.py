@@ -35,7 +35,7 @@ def guardar_datos(data):
 
 db = cargar_datos()
 
-# Inicializar sesión de administrador para cartera
+# Inicializar sesión de administrador para cartera y admin
 if "cartera_autenticado" not in st.session_state:
     st.session_state["cartera_autenticado"] = False
 
@@ -158,7 +158,6 @@ elif menu == "Gestión de Cartera":
         else:
             hoy_date = datetime.date.today()
             
-            # Procesar estados de cartera
             lista_hoy = []
             lista_mora = []
             lista_general = []
@@ -184,7 +183,6 @@ elif menu == "Gestión de Cartera":
                 v_gen["fechaPagoEsperada"] = str(f_pago_objetivo)
                 lista_general.append(v_gen)
 
-            # Sub-pestañas o secciones de Cartera
             tab1, tab2, tab3 = st.tabs(["🟢 Deben Pagar Hoy", "🔴 En Mora", "📋 Lista General y Filtros"])
             
             with tab1:
@@ -227,7 +225,6 @@ elif menu == "Gestión de Cartera":
                 st.subheader("Lista General de Cartera y Filtros")
                 df_gen = pd.DataFrame(lista_general)
                 
-                # Filtros y Buscador
                 col_b1, col_b2 = st.columns(2)
                 with col_b1:
                     busqueda_doc = st.text_input("Buscar por Documento del Cliente:")
@@ -262,6 +259,24 @@ elif menu == "Módulo Admin":
                 guardar_datos(db)
                 st.success("¡Meta actualizada correctamente!")
                 
+        st.markdown("---")
+        st.subheader("🗑️ Eliminar Venta o Crédito Mal Registrado")
+        if db["ventas"]:
+            st.markdown("Ingresa el **ID** único de la venta que deseas eliminar (puedes ver el ID en el listado de abajo):")
+            id_eliminar = st.number_input("ID de la venta a eliminar:", step=1, format="%d")
+            if st.button("Eliminar Venta Seleccionada"):
+                antes = len(db["ventas"])
+                db["ventas"] = [v for v in db["ventas"] if v.get("id") != int(id_eliminar)]
+                if len(db["ventas"]) < antes:
+                    guardar_datos(db)
+                    st.success("¡Venta/Crédito eliminado correctamente del sistema!")
+                    st.rerun()
+                else:
+                    st.error("No se encontró ninguna venta con ese ID.")
+        else:
+            st.info("No hay ventas registradas para eliminar.")
+                
+        st.markdown("---")
         st.subheader("Base de Datos General de Ventas")
         if db["ventas"]:
             st.dataframe(pd.DataFrame(db["ventas"]), use_container_width=True)
@@ -269,3 +284,4 @@ elif menu == "Módulo Admin":
             st.info("No hay ventas registradas.")
     elif password_admin != "":
         st.error("Contraseña incorrecta.")
+        
