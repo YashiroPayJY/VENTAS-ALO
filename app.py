@@ -2,40 +2,55 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import datetime
-import os
 import calendar
+from supabase import create_client, Client
 
 # Configuración de la página
 st.set_page_config(page_title="Alo - Control de Ventas y Cartera", layout="wide")
 
-# Archivo local para persistencia de datos
-DB_FILE = "base_datos_alo_ventas.json"
+# Configuración de conexión a Supabase usando Streamlit Secrets
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
 MARCAS_CELULARES = ["Samsung", "Motorola", "Xiaomi", "Oppo", "Realme", "Infinix", "Honor", "Tecno", "Vivo", "Nubia"]
 
-# Inicializar datos por defecto
-def cargar_datos():
-    if os.path.exists(DB_FILE):
-        try:
-            df_base = pd.read_json(DB_FILE)
-            return {
-                "ventas": df_base.get("ventas", pd.Series([[]])).iloc[0] if "ventas" in df_base else [],
-                "meta_unidades": int(df_base.get("meta_unidades", pd.Series([100])).iloc[0]) if "meta_unidades" in df_base else 100
-            }
-        except Exception:
-            pass
-    return {
-        "ventas": [],
-        "meta_unidades": 100
-    }
+# Funciones de base de datos SQL (Supabase)
+def cargar_datos_sql():
+    try:
+        response = supabase.table("ventas_alo").select("*").execute()
+        ventas = response.data if response.data else []
+        return {"ventas": ventas, "meta_unidades": 100}
+    except Exception as e:
+        st.error(f"Error al conectar con la base de datos: {e}")
+        return {"ventas": [], "meta_unidades": 100}
 
-def guardar_datos(data):
-    df = pd.DataFrame([data])
-    df.to_json(DB_FILE)
+def guardar_venta_sql(nueva_venta):
+    try:
+        supabase.table("ventas_alo").insert(nueva_venta).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar en la base de datos: {e}")
+        return False
 
-db = cargar_datos()
+def actualizar_pago_sql(venta_id):
+    try:
+        supabase.table("ventas_alo").update({"pagado": True, "fechaPagoRealizado": str(datetime.date.today())}).eq("id", venta_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al actualizar pago: {e}")
+        return False
 
-# Inicializar sesión de administrador para cartera y admin
+def eliminar_venta_sql(venta_id):
+    try:
+        supabase.table("ventas_alo").delete().eq("id", venta_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al eliminar: {e}")
+        return False
+
+db = cargar_datos_sql()
+
 if "cartera_autenticado" not in st.session_state:
     st.session_state["cartera_autenticado"] = False
 
@@ -119,18 +134,17 @@ elif menu == "Registro de Ventas":
                     "id": int(datetime.datetime.now().timestamp() * 1000),
                     "fecha": str(fecha_venta),
                     "nombreCliente": nombre_cliente,
-                    "documento": documento,
+                    "documento": str(documento),
                     "telefono": telefono,
                     "marca": marca,
                     "modelo": modelo,
                     "imei": imei,
-                    "valorCuota": valor_cuota,
+                    "valorCuota": float(valor_cuota),
                     "pagado": False,
                     "fechaPagoRealizado": None
                 }
-                db["ventas"].append(nueva_venta)
-                guardar_datos(db)
-                st.success("¡Venta registrada con éxito!")
+                if guardar_venta_sql(nueva_venta):
+                    st.success("VENTA REGISTRADA CON ÉXITO")
 
 # ================= 3. GESTIÓN DE CARTERA (PROTEGIDO) =================
 elif menu == "Gestión de Cartera":
@@ -153,28 +167,30 @@ elif menu == "Gestión de Cartera":
             
         st.markdown("---")
         
-        if not db["ventas"]:
+        db_actual = cargar_datos_sql()
+        ventas = db_actual["ventas"]
+        
+        if not ventas:
             st.info("No hay ventas registradas para gestionar cartera.")
         else:
             hoy_date = datetime.date.today()
-            
             lista_hoy = []
             lista_mora = []
             lista_general = []
             
-            for idx, v in enumerate(db["ventas"]):
+            for v in ventas:
                 f_venta = datetime.datetime.strptime(v["fecha"], "%Y-%m-%d").date()
                 f_pago_objetivo = f_venta + datetime.timedelta(days=14)
                 
                 estado = "Al día"
-                if v["pagado"]:
+                if v.get("pagado"):
                     estado = "Pagado"
                 elif hoy_date == f_pago_objetivo:
                     estado = "Debe pagar hoy"
-                    lista_hoy.append((idx, v))
+                    lista_hoy.append(v)
                 elif hoy_date > f_pago_objetivo:
                     estado = "En mora"
-                    lista_mora.append((idx, v))
+                    lista_mora.append(v)
                 else:
                     estado = "Pendiente de primer pago"
                     
@@ -190,37 +206,33 @@ elif menu == "Gestión de Cartera":
                 if not lista_hoy:
                     st.info("No hay clientes programados para pago el día de hoy.")
                 else:
-                    for idx, cliente in lista_hoy:
+                    for cliente in lista_hoy:
                         col_info, col_btn = st.columns([4, 1])
                         with col_info:
                             st.write(f"**Cliente:** {cliente['nombreCliente']} | **Doc:** {cliente['documento']} | **Tel:** {cliente['telefono']} | **Cuota:** ${cliente['valorCuota']:,.0f} | **Modelo:** {cliente['modelo']}")
                         with col_btn:
-                            if st.button("Marcar que pagó", key=f"pago_hoy_{idx}"):
-                                db["ventas"][idx]["pagado"] = True
-                                db["ventas"][idx]["fechaPagoRealizado"] = str(hoy_date)
-                                guardar_datos(db)
-                                st.success(f"¡Pago registrado para {cliente['nombreCliente']}!")
-                                st.rerun()
-                                
+                            if st.button("Marcar que pagó", key=f"pago_hoy_{cliente['id']}"):
+                                if actualizar_pago_sql(cliente['id']):
+                                    st.success(f"¡Pago registrado para {cliente['nombreCliente']}!")
+                                    st.rerun()
+                                    
             with tab2:
                 st.subheader("Clientes en Mora (Más de 14 días sin pago)")
                 if not lista_mora:
                     st.info("¡Excelente! No hay clientes en mora.")
                 else:
-                    for idx, cliente in lista_mora:
+                    for cliente in lista_mora:
                         col_info, col_btn = st.columns([4, 1])
                         with col_info:
                             f_v = datetime.datetime.strptime(cliente["fecha"], "%Y-%m-%d").date()
                             dias_transcurridos = (hoy_date - (f_v + datetime.timedelta(days=14))).days
                             st.write(f"**Cliente:** {cliente['nombreCliente']} | **Doc:** {cliente['documento']} | **Tel:** {cliente['telefono']} | **Atraso:** {dias_transcurridos} días | **Cuota:** ${cliente['valorCuota']:,.0f}")
                         with col_btn:
-                            if st.button("Ya realizó su pago", key=f"pago_mora_{idx}"):
-                                db["ventas"][idx]["pagado"] = True
-                                db["ventas"][idx]["fechaPagoRealizado"] = str(hoy_date)
-                                guardar_datos(db)
-                                st.success(f"¡Pago registrado y sacado de mora para {cliente['nombreCliente']}!")
-                                st.rerun()
-                                
+                            if st.button("Ya realizó su pago", key=f"pago_mora_{cliente['id']}"):
+                                if actualizar_pago_sql(cliente['id']):
+                                    st.success(f"¡Pago registrado y sacado de mora para {cliente['nombreCliente']}!")
+                                    st.rerun()
+                                    
             with tab3:
                 st.subheader("Lista General de Cartera y Filtros")
                 df_gen = pd.DataFrame(lista_general)
@@ -250,38 +262,28 @@ elif menu == "Módulo Admin":
     if password_admin == "admin123":
         st.success("Acceso concedido.")
         st.markdown("---")
-        
-        with st.form("form_meta_alo"):
-            nueva_meta = st.number_input("Meta de Unidades del Mes", value=int(db["meta_unidades"]), step=1)
-            btn_m = st.form_submit_button("Actualizar Meta")
-            if btn_m:
-                db["meta_unidades"] = int(nueva_meta)
-                guardar_datos(db)
-                st.success("¡Meta actualizada correctamente!")
                 
         st.markdown("---")
         st.subheader("🗑️ Eliminar Venta o Crédito Mal Registrado")
-        if db["ventas"]:
-            st.markdown("Ingresa el **ID** único de la venta que deseas eliminar (puedes ver el ID en el listado de abajo):")
+        db_actual = cargar_datos_sql()
+        ventas = db_actual["ventas"]
+        
+        if ventas:
+            st.markdown("Ingresa el **ID** único de la venta que deseas eliminar:")
             id_eliminar = st.number_input("ID de la venta a eliminar:", step=1, format="%d")
             if st.button("Eliminar Venta Seleccionada"):
-                antes = len(db["ventas"])
-                db["ventas"] = [v for v in db["ventas"] if v.get("id") != int(id_eliminar)]
-                if len(db["ventas"]) < antes:
-                    guardar_datos(db)
-                    st.success("¡Venta/Crédito eliminado correctamente del sistema!")
+                if eliminar_venta_sql(int(id_eliminar)):
+                    st.success("¡Venta/Crédito eliminado correctamente de Supabase!")
                     st.rerun()
-                else:
-                    st.error("No se encontró ninguna venta con ese ID.")
         else:
             st.info("No hay ventas registradas para eliminar.")
                 
         st.markdown("---")
         st.subheader("Base de Datos General de Ventas")
-        if db["ventas"]:
-            st.dataframe(pd.DataFrame(db["ventas"]), use_container_width=True)
+        if ventas:
+            st.dataframe(pd.DataFrame(ventas), use_container_width=True)
         else:
             st.info("No hay ventas registradas.")
     elif password_admin != "":
         st.error("Contraseña incorrecta.")
-        
+    
